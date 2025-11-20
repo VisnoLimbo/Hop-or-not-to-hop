@@ -43,6 +43,7 @@ static void input_callback(const void *data, uint16_t len, const linkaddr_t *src
         if (ack_packet->ack && ack_packet->seq_num == packet.seq_num) {
             printf("Node A: Received ACK for packet %d from %d.%d\n", ack_packet->seq_num, src->u8[0], src->u8[1]);
             ack_received = 1;
+            process_poll(&source_process);
         }
     }
 }
@@ -84,15 +85,34 @@ PROCESS_THREAD(source_process, ev, data) {
             retries++;
 
             etimer_set(&retry_timer, RETRY_INTERVAL);
-            PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&retry_timer));
+            PROCESS_WAIT_EVENT_UNTIL(ack_received || etimer_expired(&retry_timer));
+            if (ack_received) {
+                etimer_stop(&retry_timer);
+            }
         }
 
         if (!ack_received) {
             printf("Node A: No ACK for packet %d. Activating relay node.\n", packet.seq_num);
             packet.relay_flag = 1;
-            nullnet_buf = (uint8_t *)&packet;
-            nullnet_len = sizeof(packet);
-            NETSTACK_NETWORK.output(&relay);
+            uint8_t relay_attempts = 0;
+
+            while (!ack_received && relay_attempts < MAX_RETRIES) {
+                nullnet_buf = (uint8_t *)&packet;
+                nullnet_len = sizeof(packet);
+                NETSTACK_NETWORK.output(&relay);
+                relay_attempts++;
+                printf("Node A: Relay attempt %d for packet %d\n", relay_attempts, packet.seq_num);
+
+                etimer_set(&retry_timer, RETRY_INTERVAL);
+                PROCESS_WAIT_EVENT_UNTIL(ack_received || etimer_expired(&retry_timer));
+                if (ack_received) {
+                    etimer_stop(&retry_timer);
+                }
+            }
+
+            if (!ack_received) {
+                printf("Node A: Relay path failed for packet %d\n", packet.seq_num);
+            }
         }
 
         log_energy();

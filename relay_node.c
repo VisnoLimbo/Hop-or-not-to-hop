@@ -16,6 +16,13 @@ typedef struct {
 } custom_packet_t;
 
 static custom_packet_t packet;
+typedef struct {
+    uint8_t active;
+    uint8_t seq_num;
+    linkaddr_t origin;
+} pending_ack_t;
+
+static pending_ack_t pending_ack;
 
 PROCESS(relay_process, "Relay Node");
 AUTOSTART_PROCESSES(&relay_process);
@@ -46,10 +53,22 @@ static void send_ack(const linkaddr_t *dest, uint8_t seq_num) {
 static void input_callback(const void *data, uint16_t len, const linkaddr_t *src, const linkaddr_t *dest) {
     if (len == sizeof(custom_packet_t)) {
         memcpy(&packet, data, len);
-        if (packet.relay_flag) {
+        if (packet.relay_flag && !packet.ack) {
             printf("Node B: Relaying packet %d to Sink\n", packet.seq_num);
+            nullnet_buf = (uint8_t *)&packet;
+            nullnet_len = sizeof(packet);
             NETSTACK_NETWORK.output(&packet.dest);
-            send_ack(src, packet.seq_num);
+            pending_ack.active = 1;
+            pending_ack.seq_num = packet.seq_num;
+            linkaddr_copy(&pending_ack.origin, src);
+        } else if (packet.ack) {
+            if (pending_ack.active && packet.seq_num == pending_ack.seq_num) {
+                printf("Node B: Received ACK from sink for packet %d\n", packet.seq_num);
+                send_ack(&pending_ack.origin, packet.seq_num);
+                pending_ack.active = 0;
+            } else {
+                printf("Node B: Unexpected ACK for packet %d ignored\n", packet.seq_num);
+            }
         }
     }
 }
